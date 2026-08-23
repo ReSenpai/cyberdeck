@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# выхлопы сканов
+*.json
+!requirements.json
+raw/
+loot/
+# masscan resume/config files (могут содержать реальные цели)
+*.conf
+paused.conf
