@@ -26,8 +26,12 @@ except ImportError:  # голая система — работаем текст
 
 
 def force_utf8() -> None:
-    """Кириллица в выводе не должна падать на консолях с cp1252/cp866."""
-    for stream in (sys.stdout, sys.stderr):
+    """UTF-8 на всех трёх потоках: кириллица/эмодзи не должны падать на cp1252/cp866.
+
+    stdin тоже: конверты кибердеки ходят по пайпам в UTF-8 (remark'и VLESS — с
+    эмодзи), а Windows по умолчанию читает stdin в cp1252 и корёжит их.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             try:

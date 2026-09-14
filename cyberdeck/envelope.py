@@ -36,7 +36,7 @@ import datetime as dt
 import json
 import time
 import uuid
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 SCHEMA = "cyberdeck.v1"
 
@@ -77,6 +77,7 @@ class Envelope:
         self.warnings: list[str] = []
         self.errors: list[str] = []
         self._hosts: dict[str, dict] = {}
+        self._stats_extra: dict[str, Any] = {}
 
     # -- наполнение ---------------------------------------------------------
 
@@ -98,6 +99,24 @@ class Envelope:
                 return existing
         host["ports"].append(port)
         return port
+
+    def add_stat(self, key: str, value: Any) -> None:
+        """Досыпать своё поле в ``stats`` (группировки, счётчики конкретного тула).
+
+        Базовые поля (targets/hosts_with_ports/open_ports) остаются, кастомные
+        просто мержатся сверху — так каждый скрипт кладёт в конверт свою сводку,
+        не трогая общий контракт.
+        """
+        self._stats_extra[key] = value
+
+    def filter_hosts(self, keep: Callable[[dict], bool]) -> int:
+        """Оставить только хосты, для которых ``keep(host)`` истинно.
+
+        Возвращает, сколько хостов убрали (например, ``--alive-only`` в сканере).
+        """
+        before = len(self._hosts)
+        self._hosts = {ip: h for ip, h in self._hosts.items() if keep(h)}
+        return before - len(self._hosts)
 
     def warn(self, message: str) -> None:
         self.warnings.append(message)
@@ -135,6 +154,7 @@ class Envelope:
                 "targets": len(self.targets),
                 "hosts_with_ports": sum(1 for h in hosts if h["ports"]),
                 "open_ports": open_ports,
+                **self._stats_extra,
             },
             "warnings": self.warnings,
             "errors": self.errors,
