@@ -9,10 +9,13 @@ Cyberdeck/
 │   ├── envelope.py     единый формат ввода/вывода
 │   ├── proc.py         запуск внешних тулов с живым выводом
 │   └── ui.py           консоль, прогресс, отчёты
-└── scripts/
-    ├── portscan.py     masscan (все порты) -> nmap -sV (сервисы)
-    ├── vlessparse.py   разбор VLESS/trojan/vmess/ss в конверт (без сети)
-    └── ipscan.py       TCP-доступность + geo/ASN, чистый Python (без root)
+├── scripts/
+│   ├── portscan.py     masscan (все порты) -> nmap -sV (сервисы)
+│   ├── vlessparse.py   разбор VLESS/trojan/vmess/ss в конверт (без сети)
+│   ├── ipscan.py       TCP-доступность + geo/ASN, чистый Python (без root)
+│   └── adduser.py      завести пользователя на сервере по SSH
+├── build.py            сборка самодостаточных версий в dist/
+└── dist/               однофайловые сборки (curl | python3 -)
 ```
 
 ## Установка
@@ -206,3 +209,92 @@ cat sub.txt | ./scripts/vlessparse.py --json | ./scripts/ipscan.py --geo --json 
 `ipscan` не требует прав и не зависит от внешних бинарей, поэтому едет и на голой
 системе, и на Windows. `--geo` бьёт по бесплатному ip-api.com (лимит ~15
 батчей/мин) — при офлайне скан не падает, просто без обогащения.
+
+## adduser
+
+Заводит пользователя на удалённом сервере по SSH одним вызовом. Подключается
+системным `ssh` (без зависимостей — работают `~/.ssh/config`, ключи, ssh-agent,
+known_hosts), на сервере прогоняет идемпотентный bash. Скрипт уходит по
+зашифрованному stdin в `bash -s`, а не через argv, поэтому секреты не светятся в
+`ps` на сервере.
+
+```bash
+# обычный пользователь, вход по ключу
+./scripts/adduser.py root@1.2.3.4 -u deploy --ssh-key-file id.pub
+
+# админ (в группу sudo/wheel) со сгенерированным паролем
+./scripts/adduser.py 10.0.0.5 -u ops --admin --random-password
+
+# сервисный пользователь: sudo без пароля, вход по ключу
+./scripts/adduser.py root@host -u ci --nopasswd-sudo --ssh-key-file ci.pub
+
+# раскатать сразу по всем живым хостам из цепочки
+./scripts/ipscan.py hosts.txt --alive-only --json | ./scripts/adduser.py -u ci --ssh-key-file ci.pub
+
+# показать удалённый скрипт и никуда не подключаться (пароль скрыт)
+./scripts/adduser.py root@host -u test --admin --random-password --dry-run
+```
+
+Запуск идемпотентный: если пользователь уже есть — не пересоздаётся, но ключ,
+группы и sudo доедут, а дубликат ключа в `authorized_keys` не добавится. Пароль
+трогается только когда явно задан флаг.
+
+| флаг | зачем |
+|------|-------|
+| `-u, --user` | имя пользователя (обязательно) |
+| `--ssh-user` | логин для SSH (по умолчанию `root`) |
+| `-i, --identity` / `-p, --ssh-port` | ключ / порт для SSH |
+| `--become` | выполнять на сервере через `sudo -n` (если логин не root) |
+| `--admin` | добавить в группу `sudo`/`wheel` (авто-детект) |
+| `--nopasswd-sudo` | `sudo` без пароля (drop-in в `sudoers.d`, проверка `visudo`) |
+| `--random-password` | сгенерировать пароль и показать (в stderr; в JSON — только с `--show-secrets`) |
+| `--ask-password` | спросить пароль скрытым вводом |
+| `--password PLAIN` | задать пароль строкой (виден в `ps`/history локально) |
+| `--lock` | заблокировать пароль (вход только по ключу) |
+| `--ssh-key` / `--ssh-key-file` | публичный ключ строкой или из файла |
+| `-G, --groups` `--uid` `--shell` `--gecos` `--home` | параметры useradd |
+| `--dry-run` | показать удалённый скрипт, не подключаясь |
+| `--json` / `-o` / `-q` / `-v` | конверт / файл / тишина / stderr сервера |
+
+Без флага пароля пользователь создаётся с заблокированным паролем — вход только
+по ключу (безопасный дефолт). Каждый сервер в конверте это `host` c полем `user`
+(что сделали) и журналом `actions`. На сервере нужны стандартные `useradd`,
+`chpasswd`, `getent`, а для `--nopasswd-sudo` — `visudo`.
+
+## Автономный запуск (dist/)
+
+Скрипты в `scripts/` живут в связке с пакетом `cyberdeck`, поэтому вытащить один
+файл и запустить его в отрыве нельзя — будет `ModuleNotFoundError`. Для «дёрнул
+один файл и запустил» есть сборка:
+
+```bash
+python build.py       # -> dist/portscan.py, vlessparse.py, ipscan.py, adduser.py
+```
+
+`build.py` вклеивает `cyberdeck` (envelope/ui/proc) прямо внутрь каждого скрипта
+(base64 + бутстрап в `sys.modules`). На выходе — один самодостаточный `.py` на
+чистом стдлибе, который можно раздавать по одному и лить прямо в интерпретатор:
+
+```bash
+# цель в аргументах — тогда stdin свободен под сам скрипт
+curl -sSL https://raw.githubusercontent.com/ReSenpai/Cyberdeck/main/dist/ipscan.py \
+  | python3 - 1.1.1.1 8.8.8.8 --geo
+
+curl -sSL https://raw.githubusercontent.com/ReSenpai/Cyberdeck/main/dist/adduser.py \
+  | python3 - root@10.0.0.5 -u deploy --admin --random-password
+```
+
+Нюанс: при `curl … | python3 -` сам скрипт уже занимает stdin, поэтому подавать
+ему данные ещё и по пайпу нельзя — цели передавай аргументами. Если нужен именно
+пайп с данными (`cat sub.txt | … vlessparse | … ipscan`), сначала скачай файлы, а
+потом запускай как `python3 ipscan.py …`:
+
+```bash
+curl -sSLO https://raw.githubusercontent.com/ReSenpai/Cyberdeck/main/dist/vlessparse.py
+curl -sSLO https://raw.githubusercontent.com/ReSenpai/Cyberdeck/main/dist/ipscan.py
+cat sub.txt | python3 vlessparse.py --json | python3 ipscan.py --geo --json
+```
+
+Исходники не меняем ради сборки — правим `scripts/` и `cyberdeck/`, потом
+пересобираем `build.py`. Файлы `dist/` коммитятся в репозиторий, чтобы `curl` с
+GitHub работал.
